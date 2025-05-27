@@ -1,0 +1,18 @@
+server:
+  listen: ":9100"
+  # basic-auth is optional
+  basic_auth:
+    enabled: true
+    username: "exporter"
+    password: "secret"
+  # If you have TLS certs:
+  tls_cert: ""
+  tls_key: ""
+
+pm2:
+  socket_path: ""          # leave empty for default, or point to PM2 socket
+  poll_interval: 15s
+
+log:
+  paths:
+    - "/home/xero/.pm2/logs/*.log"
