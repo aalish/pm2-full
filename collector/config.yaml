@@ -1,0 +1,29 @@
+
+# Define one or more scrape jobs
+scrape:
+  jobs:
+    - job_name: "app_exporter"
+      targets:
+        - host: "localhost"
+          port: 9100
+          basic_auth:
+            username: "exporter"
+            password: "secret"
+      paths:
+        metrics: "/metrics"
+        processes: "/processes"
+        logs: "/logs"
+      interval: "15s"
+
+# Local disk storage configuration
+storage:
+  type: "disk"
+  directory: "./data"
+  retention_days: 7
+
+# API server configuration
+api:
+  listen: ":9200"
+  basic_auth:
+    username: "admin"
+    password: "secret"
