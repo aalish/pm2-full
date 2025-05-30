@@ -19,7 +19,7 @@ scrape:
 storage:
   type: "disk"
   directory: "./data"
-  retention_days: 7
+  retention_days: 1
 
 # API server configuration
 api:

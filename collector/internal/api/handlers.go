@@ -16,6 +16,7 @@ func docsHandler(w http.ResponseWriter, r *http.Request) {
 		"/query":     map[string]interface{}{"method": "GET", "params": []string{"job", "target", "metric", "start (RFC3339)", "end (RFC3339)"}},
 		"/processes": map[string]interface{}{"method": "GET", "params": []string{"job (optional)", "target (optional)"}},
 		"/logs":      map[string]interface{}{"method": "GET", "params": []string{"job (optional)", "target (optional)"}},
+		"/apps":      map[string]interface{}{"method": "GET", "params": []string{"job (optional)", "target (optional)"}},
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(docs)
@@ -31,6 +32,26 @@ func queryHandler(store storage.Store) http.HandlerFunc {
 		end, _ := time.Parse(time.RFC3339, r.URL.Query().Get("end"))
 
 		data, err := store.QueryMetrics(storage.QueryParams{Job: job, Target: target, Start: start, End: end})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(data)
+	}
+}
+
+// queryHandler returns metrics matching query parameters
+func appsHandler(store storage.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		job := r.URL.Query().Get("job")
+		target := r.URL.Query().Get("target")
+		// metric := r.URL.Query().Get("metric")
+		start, _ := time.Parse(time.RFC3339, r.URL.Query().Get("start"))
+		end, _ := time.Parse(time.RFC3339, r.URL.Query().Get("end"))
+
+		data, err := store.QueryApps(storage.QueryParams{Job: job, Target: target, Start: start, End: end})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -64,8 +85,10 @@ func logsHandler(store storage.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		job := r.URL.Query().Get("job")
 		target := r.URL.Query().Get("target")
+		start, _ := time.Parse(time.RFC3339, r.URL.Query().Get("start"))
+		end, _ := time.Parse(time.RFC3339, r.URL.Query().Get("end"))
 
-		lines, err := store.QueryLogs(storage.LogQuery{Job: job, Target: target})
+		lines, err := store.QueryLogs(storage.LogQuery{Job: job, Target: target, Start: start, End: end})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

@@ -31,12 +31,14 @@ type QueryParams struct {
 // aliases for clarity
 type ProcessQuery = QueryParams
 type LogQuery = QueryParams
+type AppQuery = QueryParams
 
 // Store is the read/query interface.
 type Store interface {
 	QueryMetrics(q QueryParams) ([]json.RawMessage, error)
 	QueryProcesses(q ProcessQuery) ([]json.RawMessage, error)
 	QueryLogs(q LogQuery) ([]string, error)
+	QueryApps(q AppQuery) ([]json.RawMessage, error)
 }
 
 // DiskStorage implements both the discovery.Store (write) and storage.Store (read).
@@ -92,7 +94,7 @@ func (d *DiskStorage) StoreProcesses(job, target string, data []byte) {
 		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
 		Data:      json.RawMessage(data),
 	}
-	d.appendJSONLine("processes", job, target, rec)
+	d.overwriteJSONLine("processes", job, target, rec)
 }
 
 // StoreLog strips "[app]" prefix, records app name, and appends to logs_<job>_<target>_<app>.jsonl
@@ -139,6 +141,34 @@ func (d *DiskStorage) appendJSONLine(kind, job, target string, v interface{}) {
 	f.Write([]byte("\n"))
 }
 
+// helper for metrics & processes (overwrite mode)
+func (d *DiskStorage) overwriteJSONLine(kind, job, target string, v interface{}) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	fn := filepath.Join(d.dir, fmt.Sprintf("%s_%s_%s.jsonl", kind, job, target))
+	// Use O_TRUNC instead of O_APPEND to clear the file on open
+	f, err := os.OpenFile(fn, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "overwriteJSONLine: open %s: %v\n", fn, err)
+		return
+	}
+	defer f.Close()
+
+	line, err := json.Marshal(v)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "overwriteJSONLine: marshal: %v\n", err)
+		return
+	}
+	if _, err := f.Write(line); err != nil {
+		fmt.Fprintf(os.Stderr, "overwriteJSONLine: write: %v\n", err)
+		return
+	}
+	if _, err := f.Write([]byte("\n")); err != nil {
+		fmt.Fprintf(os.Stderr, "overwriteJSONLine: write newline: %v\n", err)
+	}
+}
+
 // specialized helper for logs (includes app in filename)
 func (d *DiskStorage) appendLogLine(job, target, app string, v interface{}) {
 	d.mu.Lock()
@@ -166,7 +196,9 @@ func (d *DiskStorage) appendLogLine(job, target, app string, v interface{}) {
 func (d *DiskStorage) QueryMetrics(q QueryParams) ([]json.RawMessage, error) {
 	return d.queryJSONLines("metrics", q.Job, q.Target, q.Start, q.End)
 }
-
+func (d *DiskStorage) QueryApps(q QueryParams) ([]json.RawMessage, error) {
+	return d.queryAppLines("processes", q.Job, q.Target, q.Start, q.End)
+}
 func (d *DiskStorage) QueryProcesses(q ProcessQuery) ([]json.RawMessage, error) {
 	return d.queryJSONLines("processes", q.Job, q.Target, q.Start, q.End)
 }
@@ -212,6 +244,63 @@ func (d *DiskStorage) QueryLogs(q LogQuery) ([]string, error) {
 		f.Close()
 	}
 	return out, nil
+}
+
+// shared JSON-lines reader for metrics & processes, returns only names
+func (d *DiskStorage) queryAppLines(kind, job, target string, start, end time.Time) ([]json.RawMessage, error) {
+	fn := filepath.Join(d.dir, fmt.Sprintf("%s_%s_%s.jsonl", kind, job, target))
+	fmt.Println(fn)
+	f, err := os.Open(fn)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+
+	var results []json.RawMessage
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+
+		// 1) peek at the timestamp
+		var head struct {
+			Timestamp string `json:"timestamp"`
+		}
+		if err := json.Unmarshal(line, &head); err != nil {
+			continue
+		}
+		ts, err := time.Parse(time.RFC3339Nano, head.Timestamp)
+		if err != nil {
+			continue
+		}
+		if (start.IsZero() || !ts.Before(start)) && (end.IsZero() || !ts.After(end)) {
+			// 2) now extract just the .data[].name fields
+			var payload struct {
+				Data []struct {
+					Name string `json:"name"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(line, &payload); err != nil {
+				continue
+			}
+			for _, d := range payload.Data {
+				// marshal each name into {"name":"..."}
+				nm, err := json.Marshal(struct {
+					Name string `json:"name"`
+				}{Name: d.Name})
+				if err != nil {
+					continue
+				}
+				results = append(results, json.RawMessage(nm))
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil && err != io.EOF {
+		return nil, err
+	}
+	return results, nil
 }
 
 // shared JSON-lines reader for metrics & processes
