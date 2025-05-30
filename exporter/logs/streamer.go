@@ -1,4 +1,3 @@
-// logs/streamer.go
 package logs
 
 import (
@@ -25,7 +24,7 @@ func NewStreamer(paths []string) *Streamer {
 	return &Streamer{paths: paths}
 }
 
-// StreamHandler writes existing log lines and streams new ones with [app-name] prefix
+// StreamHandler streams only new log lines (no historical content)
 func (s *Streamer) StreamHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
@@ -50,7 +49,7 @@ func (s *Streamer) StreamHandler(w http.ResponseWriter, r *http.Request) {
 	<-ctx.Done()
 }
 
-// streamFile reads from the file (including existing content) and streams each line
+// streamFile seeks to the end and then streams only new lines as they arrive
 func streamFile(ctx context.Context, path string, w io.Writer, flusher http.Flusher, mu *sync.Mutex) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -58,6 +57,12 @@ func streamFile(ctx context.Context, path string, w io.Writer, flusher http.Flus
 		return
 	}
 	defer file.Close()
+
+	// Seek to end to skip existing content
+	if _, err := file.Seek(0, io.SeekEnd); err != nil {
+		log.Printf("failed to seek to end of %s: %v", path, err)
+		return
+	}
 
 	reader := bufio.NewReader(file)
 	appName := extractAppName(path)
@@ -79,15 +84,16 @@ func streamFile(ctx context.Context, path string, w io.Writer, flusher http.Flus
 			return
 		}
 
+		// Prefix and write the new line
 		prefixed := fmt.Sprintf("[%s] %s", appName, line)
 		mu.Lock()
-		_, writeErr := w.Write([]byte(prefixed))
-		flusher.Flush()
-		mu.Unlock()
-		if writeErr != nil {
+		if _, writeErr := w.Write([]byte(prefixed)); writeErr != nil {
+			mu.Unlock()
 			log.Printf("error writing to client: %v", writeErr)
 			return
 		}
+		flusher.Flush()
+		mu.Unlock()
 	}
 }
 

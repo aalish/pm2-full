@@ -150,22 +150,22 @@ func (d *DiskStorage) overwriteJSONLine(kind, job, target string, v interface{})
 	// Use O_TRUNC instead of O_APPEND to clear the file on open
 	f, err := os.OpenFile(fn, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "overwriteJSONLine: open %s: %v\n", fn, err)
+		// fmt.Fprintf(os.Stderr, "overwriteJSONLine: open %s: %v\n", fn, err)
 		return
 	}
 	defer f.Close()
 
 	line, err := json.Marshal(v)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "overwriteJSONLine: marshal: %v\n", err)
+		// fmt.Fprintf(os.Stderr, "overwriteJSONLine: marshal: %v\n", err)
 		return
 	}
 	if _, err := f.Write(line); err != nil {
-		fmt.Fprintf(os.Stderr, "overwriteJSONLine: write: %v\n", err)
+		// fmt.Fprintf(os.Stderr, "overwriteJSONLine: write: %v\n", err)
 		return
 	}
 	if _, err := f.Write([]byte("\n")); err != nil {
-		fmt.Fprintf(os.Stderr, "overwriteJSONLine: write newline: %v\n", err)
+		// fmt.Fprintf(os.Stderr, "overwriteJSONLine: write newline: %v\n", err)
 	}
 }
 
@@ -177,14 +177,14 @@ func (d *DiskStorage) appendLogLine(job, target, app string, v interface{}) {
 	fn := filepath.Join(d.dir, fmt.Sprintf("logs_%s_%s_%s.jsonl", job, target, app))
 	f, err := os.OpenFile(fn, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "appendLogLine: open %s: %v\n", fn, err)
+		// fmt.Fprintf(os.Stderr, "appendLogLine: open %s: %v\n", fn, err)
 		return
 	}
 	defer f.Close()
 
 	line, err := json.Marshal(v)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "appendLogLine: marshal: %v\n", err)
+		// fmt.Fprintf(os.Stderr, "appendLogLine: marshal: %v\n", err)
 		return
 	}
 	f.Write(line)
@@ -203,14 +203,19 @@ func (d *DiskStorage) QueryProcesses(q ProcessQuery) ([]json.RawMessage, error) 
 	return d.queryJSONLines("processes", q.Job, q.Target, q.Start, q.End)
 }
 
+// QueryLogs returns all log lines in [q.Start, q.End] by binary-searching each JSONL file.
 func (d *DiskStorage) QueryLogs(q LogQuery) ([]string, error) {
 	var out []string
-
 	pattern := fmt.Sprintf("logs_%s_%s_*.jsonl", q.Job, q.Target)
 	if q.App != "" {
 		pattern = fmt.Sprintf("logs_%s_%s_%s.jsonl", q.Job, q.Target, q.App)
 	}
-	files, _ := filepath.Glob(filepath.Join(d.dir, pattern))
+
+	files, err := filepath.Glob(filepath.Join(d.dir, pattern))
+	if err != nil {
+		return nil, err
+	}
+
 	for _, fn := range files {
 		f, err := os.Open(fn)
 		if err != nil {
@@ -219,26 +224,84 @@ func (d *DiskStorage) QueryLogs(q LogQuery) ([]string, error) {
 			}
 			return nil, err
 		}
+
+		// Get size for binary search
+		stat, err := f.Stat()
+		if err != nil {
+			f.Close()
+			return nil, err
+		}
+		size := stat.Size()
+
+		// Find start offset
+		startOff := int64(0)
+		if !q.Start.IsZero() {
+			low, high := int64(0), size
+			for low < high {
+				mid := (low + high) / 2
+				// seek to mid and align to next line
+				if _, err := f.Seek(mid, io.SeekStart); err != nil {
+					break
+				}
+				buf := bufio.NewReader(f)
+				// discard partial line
+				_, _ = buf.ReadString('\n')
+				line, err := buf.ReadBytes('\n')
+				if err != nil {
+					high = mid
+					continue
+				}
+				var hdr struct {
+					Timestamp string `json:"timestamp"`
+				}
+				if err := json.Unmarshal(line, &hdr); err != nil {
+					high = mid
+					continue
+				}
+				ts, err := time.Parse(time.RFC3339Nano, hdr.Timestamp)
+				if err != nil {
+					high = mid
+					continue
+				}
+				if ts.Before(q.Start) {
+					low = mid + 1
+				} else {
+					high = mid
+				}
+			}
+			startOff = low
+		}
+
+		// Seek to found offset and scan forward
+		if _, err := f.Seek(startOff, io.SeekStart); err != nil {
+			f.Close()
+			return nil, err
+		}
 		scanner := bufio.NewScanner(f)
 		for scanner.Scan() {
 			raw := scanner.Bytes()
-			var head struct {
+			var hdr struct {
 				Timestamp string `json:"timestamp"`
 			}
-			if err := json.Unmarshal(raw, &head); err != nil {
+			if err := json.Unmarshal(raw, &hdr); err != nil {
 				continue
 			}
-			ts, err := time.Parse(time.RFC3339Nano, head.Timestamp)
+			ts, err := time.Parse(time.RFC3339Nano, hdr.Timestamp)
 			if err != nil {
 				continue
 			}
-			if (q.Start.IsZero() || !ts.Before(q.Start)) && (q.End.IsZero() || !ts.After(q.End)) {
-				var rec struct {
-					Line string `json:"line"`
+			if (!q.Start.IsZero() && ts.Before(q.Start)) || (!q.End.IsZero() && ts.After(q.End)) {
+				if !q.End.IsZero() && ts.After(q.End) {
+					break
 				}
-				if err := json.Unmarshal(raw, &rec); err == nil {
-					out = append(out, rec.Line)
-				}
+				continue
+			}
+			// extract line field
+			var rec struct {
+				Line string `json:"line"`
+			}
+			if err := json.Unmarshal(raw, &rec); err == nil {
+				out = append(out, rec.Line)
 			}
 		}
 		f.Close()
@@ -249,7 +312,7 @@ func (d *DiskStorage) QueryLogs(q LogQuery) ([]string, error) {
 // shared JSON-lines reader for metrics & processes, returns only names
 func (d *DiskStorage) queryAppLines(kind, job, target string, start, end time.Time) ([]json.RawMessage, error) {
 	fn := filepath.Join(d.dir, fmt.Sprintf("%s_%s_%s.jsonl", kind, job, target))
-	fmt.Println(fn)
+	// fmt.Println(fn)
 	f, err := os.Open(fn)
 	if err != nil {
 		if os.IsNotExist(err) {
