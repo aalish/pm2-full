@@ -123,31 +123,7 @@
         "uid": "fenflhkzs0hdsc"
       },
       "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green"
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
+        "defaults": {},
         "overrides": []
       },
       "gridPos": {
@@ -158,21 +134,36 @@
       },
       "id": 2,
       "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true
+        "dedupStrategy": "none",
+        "enableInfiniteScrolling": false,
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": false,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
       },
       "pluginVersion": "12.0.0",
       "targets": [
         {
-          "columns": [],
+          "columns": [
+            {
+              "selector": "timestamp",
+              "text": "timestamp",
+              "type": "timestamp"
+            },
+            {
+              "selector": "line",
+              "text": "line",
+              "type": "string"
+            },
+            {
+              "selector": "app",
+              "text": "app",
+              "type": "string"
+            }
+          ],
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
             "uid": "fenflhkzs0hdsc"
@@ -192,7 +183,7 @@
         }
       ],
       "title": "Application Logs",
-      "type": "table"
+      "type": "logs"
     },
     {
       "datasource": {
@@ -299,8 +290,8 @@
     "list": [
       {
         "current": {
-          "text": "57.129.64.32",
-          "value": "57.129.64.32"
+          "text": "asia",
+          "value": "asia"
         },
         "datasource": {
           "type": "yesoreyeram-infinity-datasource",
@@ -370,8 +361,8 @@
       },
       {
         "current": {
-          "text": "Unified-Interface",
-          "value": "Unified-Interface"
+          "text": "Roundtable Backend",
+          "value": "Roundtable Backend"
         },
         "datasource": {
           "type": "yesoreyeram-infinity-datasource",
@@ -414,5 +405,5 @@
   "timezone": "browser",
   "title": "Pm2 logs",
   "uid": "aa8b02a7-e748-468a-bc85-7bcddb3aa30d",
-  "version": 16
+  "version": 17
 }
