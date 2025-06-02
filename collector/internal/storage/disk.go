@@ -27,6 +27,11 @@ type QueryParams struct {
 	Start  time.Time // inclusive
 	End    time.Time // inclusive
 }
+type logRecord struct {
+	Timestamp string `json:"timestamp"`
+	App       string `json:"app"`
+	Line      string `json:"line"`
+}
 
 // aliases for clarity
 type ProcessQuery = QueryParams
@@ -39,7 +44,7 @@ type JobQuery = QueryParams
 type Store interface {
 	QueryMetrics(q QueryParams) ([]json.RawMessage, error)
 	QueryProcesses(q ProcessQuery) ([]json.RawMessage, error)
-	QueryLogs(q LogQuery) ([]string, error)
+	QueryLogs(q LogQuery) ([]logRecord, error)
 	QueryApps(q AppQuery) ([]json.RawMessage, error)
 	ListAllTargets() ([]json.RawMessage, error)
 	ListJobsByTarget(q JobQuery) ([]json.RawMessage, error)
@@ -292,40 +297,39 @@ func (d *DiskStorage) ListJobsByTarget(q JobQuery) ([]json.RawMessage, error) {
 
 // QueryLogs returns all log lines in [q.Start, q.End].
 // If q.App != "", it will only open logs_<Job>_<Target>_<App>.jsonl (no wildcard).
-func (d *DiskStorage) QueryLogs(q LogQuery) ([]string, error) {
-	var out []string
 
+// QueryLogs now returns a slice of logRecord instead of []string
+func (d *DiskStorage) QueryLogs(q LogQuery) ([]logRecord, error) {
+	var records []logRecord
+
+	// Determine file pattern
 	var pattern string
 	if q.App == "" {
-		// No app filter ⇒ match all shards for job/target
 		pattern = fmt.Sprintf("logs_%s_%s_*.jsonl", q.Job, q.Target)
 	} else {
-		// App is specified ⇒ open exactly this one file (no wildcard)
 		pattern = fmt.Sprintf("logs_%s_%s_%s.jsonl", q.Job, q.Target, q.App)
 	}
 
-	// Use Glob only if we have a wildcard; otherwise, just check existence of the single file.
+	// Find matching files
 	var files []string
 	if q.App == "" {
-		// pattern contains a “*”
 		matches, err := filepath.Glob(filepath.Join(d.dir, pattern))
 		if err != nil {
 			return nil, err
 		}
 		files = matches
 	} else {
-		// pattern is a literal filename ⇒ just construct the full path and see if it exists.
 		fullPath := filepath.Join(d.dir, pattern)
 		if _, err := os.Stat(fullPath); err != nil {
 			if os.IsNotExist(err) {
-				// no such file ⇒ nothing to read
-				return nil, nil
+				return []logRecord{}, nil
 			}
 			return nil, err
 		}
 		files = []string{fullPath}
 	}
 
+	// Iterate over each file
 	for _, fn := range files {
 		f, err := os.Open(fn)
 		if err != nil {
@@ -335,7 +339,6 @@ func (d *DiskStorage) QueryLogs(q LogQuery) ([]string, error) {
 			return nil, err
 		}
 
-		// ——————————————————————————————
 		// Determine file size for binary search
 		stat, err := f.Stat()
 		if err != nil {
@@ -344,8 +347,7 @@ func (d *DiskStorage) QueryLogs(q LogQuery) ([]string, error) {
 		}
 		size := stat.Size()
 
-		// ——————————————————————————————
-		// Binary‐search to find the byte offset where timestamp ≥ q.Start
+		// Binary search for starting offset ≥ q.Start
 		startOff := int64(0)
 		if !q.Start.IsZero() {
 			low, high := int64(0), size
@@ -355,19 +357,17 @@ func (d *DiskStorage) QueryLogs(q LogQuery) ([]string, error) {
 					break
 				}
 				buf := bufio.NewReader(f)
-				// Discard any partial line at this “mid” position
+				// Discard partial line
 				_, _ = buf.ReadString('\n')
-				line, err := buf.ReadBytes('\n')
+				lineBytes, err := buf.ReadBytes('\n')
 				if err != nil {
-					// If we can’t read a full line, assume mid was too far
 					high = mid
 					continue
 				}
-
 				var hdr struct {
 					Timestamp string `json:"timestamp"`
 				}
-				if err := json.Unmarshal(line, &hdr); err != nil {
+				if err := json.Unmarshal(lineBytes, &hdr); err != nil {
 					high = mid
 					continue
 				}
@@ -376,7 +376,6 @@ func (d *DiskStorage) QueryLogs(q LogQuery) ([]string, error) {
 					high = mid
 					continue
 				}
-
 				if ts.Before(q.Start) {
 					low = mid + 1
 				} else {
@@ -386,8 +385,7 @@ func (d *DiskStorage) QueryLogs(q LogQuery) ([]string, error) {
 			startOff = low
 		}
 
-		// ——————————————————————————————
-		// Seek to the computed start offset and scan forward
+		// Seek to computed offset and scan forward
 		if _, err := f.Seek(startOff, io.SeekStart); err != nil {
 			f.Close()
 			return nil, err
@@ -413,18 +411,27 @@ func (d *DiskStorage) QueryLogs(q LogQuery) ([]string, error) {
 				continue
 			}
 
-			// Within range ⇒ extract the “line” field and append
-			var rec struct {
-				Line string `json:"line"`
+			// Extract the “line” and “app” fields
+			var recJSON struct {
+				Timestamp string `json:"timestamp"`
+				App       string `json:"app"`
+				Line      string `json:"line"`
 			}
-			if err := json.Unmarshal(raw, &rec); err == nil {
-				out = append(out, rec.Line)
+			if err := json.Unmarshal(raw, &recJSON); err != nil {
+				continue
 			}
+
+			// Append a structured logRecord
+			records = append(records, logRecord{
+				Timestamp: recJSON.Timestamp,
+				App:       recJSON.App,
+				Line:      recJSON.Line,
+			})
 		}
 		f.Close()
 	}
 
-	return out, nil
+	return records, nil
 }
 
 // shared JSON-lines reader for metrics & processes, returns only names
