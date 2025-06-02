@@ -203,17 +203,40 @@ func (d *DiskStorage) QueryProcesses(q ProcessQuery) ([]json.RawMessage, error) 
 	return d.queryJSONLines("processes", q.Job, q.Target, q.Start, q.End)
 }
 
-// QueryLogs returns all log lines in [q.Start, q.End] by binary-searching each JSONL file.
+// QueryLogs returns all log lines in [q.Start, q.End].
+// If q.App != "", it will only open logs_<Job>_<Target>_<App>.jsonl (no wildcard).
 func (d *DiskStorage) QueryLogs(q LogQuery) ([]string, error) {
 	var out []string
-	pattern := fmt.Sprintf("logs_%s_%s_*.jsonl", q.Job, q.Target)
-	if q.App != "" {
+
+	var pattern string
+	if q.App == "" {
+		// No app filter ⇒ match all shards for job/target
+		pattern = fmt.Sprintf("logs_%s_%s_*.jsonl", q.Job, q.Target)
+	} else {
+		// App is specified ⇒ open exactly this one file (no wildcard)
 		pattern = fmt.Sprintf("logs_%s_%s_%s.jsonl", q.Job, q.Target, q.App)
 	}
 
-	files, err := filepath.Glob(filepath.Join(d.dir, pattern))
-	if err != nil {
-		return nil, err
+	// Use Glob only if we have a wildcard; otherwise, just check existence of the single file.
+	var files []string
+	if q.App == "" {
+		// pattern contains a “*”
+		matches, err := filepath.Glob(filepath.Join(d.dir, pattern))
+		if err != nil {
+			return nil, err
+		}
+		files = matches
+	} else {
+		// pattern is a literal filename ⇒ just construct the full path and see if it exists.
+		fullPath := filepath.Join(d.dir, pattern)
+		if _, err := os.Stat(fullPath); err != nil {
+			if os.IsNotExist(err) {
+				// no such file ⇒ nothing to read
+				return nil, nil
+			}
+			return nil, err
+		}
+		files = []string{fullPath}
 	}
 
 	for _, fn := range files {
@@ -225,7 +248,8 @@ func (d *DiskStorage) QueryLogs(q LogQuery) ([]string, error) {
 			return nil, err
 		}
 
-		// Get size for binary search
+		// ——————————————————————————————
+		// Determine file size for binary search
 		stat, err := f.Stat()
 		if err != nil {
 			f.Close()
@@ -233,24 +257,26 @@ func (d *DiskStorage) QueryLogs(q LogQuery) ([]string, error) {
 		}
 		size := stat.Size()
 
-		// Find start offset
+		// ——————————————————————————————
+		// Binary‐search to find the byte offset where timestamp ≥ q.Start
 		startOff := int64(0)
 		if !q.Start.IsZero() {
 			low, high := int64(0), size
 			for low < high {
 				mid := (low + high) / 2
-				// seek to mid and align to next line
 				if _, err := f.Seek(mid, io.SeekStart); err != nil {
 					break
 				}
 				buf := bufio.NewReader(f)
-				// discard partial line
+				// Discard any partial line at this “mid” position
 				_, _ = buf.ReadString('\n')
 				line, err := buf.ReadBytes('\n')
 				if err != nil {
+					// If we can’t read a full line, assume mid was too far
 					high = mid
 					continue
 				}
+
 				var hdr struct {
 					Timestamp string `json:"timestamp"`
 				}
@@ -263,6 +289,7 @@ func (d *DiskStorage) QueryLogs(q LogQuery) ([]string, error) {
 					high = mid
 					continue
 				}
+
 				if ts.Before(q.Start) {
 					low = mid + 1
 				} else {
@@ -272,7 +299,8 @@ func (d *DiskStorage) QueryLogs(q LogQuery) ([]string, error) {
 			startOff = low
 		}
 
-		// Seek to found offset and scan forward
+		// ——————————————————————————————
+		// Seek to the computed start offset and scan forward
 		if _, err := f.Seek(startOff, io.SeekStart); err != nil {
 			f.Close()
 			return nil, err
@@ -290,13 +318,15 @@ func (d *DiskStorage) QueryLogs(q LogQuery) ([]string, error) {
 			if err != nil {
 				continue
 			}
-			if (!q.Start.IsZero() && ts.Before(q.Start)) || (!q.End.IsZero() && ts.After(q.End)) {
+			if (!q.Start.IsZero() && ts.Before(q.Start)) ||
+				(!q.End.IsZero() && ts.After(q.End)) {
 				if !q.End.IsZero() && ts.After(q.End) {
 					break
 				}
 				continue
 			}
-			// extract line field
+
+			// Within range ⇒ extract the “line” field and append
 			var rec struct {
 				Line string `json:"line"`
 			}
@@ -306,6 +336,7 @@ func (d *DiskStorage) QueryLogs(q LogQuery) ([]string, error) {
 		}
 		f.Close()
 	}
+
 	return out, nil
 }
 
