@@ -28,5 +28,15 @@ func Start(cfg config.APIConfig, store storage.Store) error {
 	a := r.PathPrefix("/apps").Subrouter()
 	a.Use(BasicAuth(cfg.BasicAuth.Username, cfg.BasicAuth.Password))
 	a.HandleFunc("", appsHandler(store)).Methods("GET")
+
+	t := r.PathPrefix("/target").Subrouter()
+	t.Use(BasicAuth(cfg.BasicAuth.Username, cfg.BasicAuth.Password))
+	t.HandleFunc("", targetHandler(store)).Methods("GET")
+
+	j := r.PathPrefix("/jobs").Subrouter()
+	j.Use(BasicAuth(cfg.BasicAuth.Username, cfg.BasicAuth.Password))
+	j.HandleFunc("", jobsHandler(store)).Methods("GET")
+
 	return http.ListenAndServe(cfg.Listen, r)
+
 }

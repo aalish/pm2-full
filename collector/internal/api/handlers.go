@@ -62,6 +62,37 @@ func appsHandler(store storage.Store) http.HandlerFunc {
 	}
 }
 
+// queryHandler returns metrics matching query parameters
+func jobsHandler(store storage.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		target := r.URL.Query().Get("target")
+
+		data, err := store.ListJobsByTarget(storage.QueryParams{Target: target})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(data)
+	}
+}
+
+// queryHandler returns metrics matching query parameters
+func targetHandler(store storage.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+
+		data, err := store.ListAllTargets()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(data)
+	}
+}
+
 // processesHandler returns process snapshots filtered by job and/or target
 func processesHandler(store storage.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

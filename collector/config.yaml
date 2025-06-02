@@ -2,7 +2,7 @@
 # Define one or more scrape jobs
 scrape:
   jobs:
-    - job_name: "app_exporter"
+    - job_name: "appexporter"
       targets:
         - host: "localhost"
           port: 9100

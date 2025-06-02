@@ -32,6 +32,8 @@ type QueryParams struct {
 type ProcessQuery = QueryParams
 type LogQuery = QueryParams
 type AppQuery = QueryParams
+type TargetQuery = QueryParams
+type JobQuery = QueryParams
 
 // Store is the read/query interface.
 type Store interface {
@@ -39,6 +41,8 @@ type Store interface {
 	QueryProcesses(q ProcessQuery) ([]json.RawMessage, error)
 	QueryLogs(q LogQuery) ([]string, error)
 	QueryApps(q AppQuery) ([]json.RawMessage, error)
+	ListAllTargets() ([]json.RawMessage, error)
+	ListJobsByTarget(q JobQuery) ([]json.RawMessage, error)
 }
 
 // DiskStorage implements both the discovery.Store (write) and storage.Store (read).
@@ -62,6 +66,81 @@ func New(dir string, retentionDays int) (*DiskStorage, error) {
 	ds := &DiskStorage{dir: dir, retentionDays: retentionDays}
 	go ds.startRetention()
 	return ds, nil
+}
+
+// --- target and jobs query implementation ---
+
+// queryTarget returns all unique <target> values (as JSON) from filenames matching
+// “logs_<job>_<target>_<app>.jsonl” in d.dir.
+func (d *DiskStorage) queryTarget() ([]json.RawMessage, error) {
+	// Pattern: logs_<job>_<target>_<app>.jsonl  (one “*” for job, one for target, one for app)
+	pattern := filepath.Join(d.dir, "logs_*_*_*.jsonl")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, err
+	}
+
+	seen := make(map[string]struct{})
+	for _, fn := range matches {
+		base := filepath.Base(fn) // e.g. "logs_myJob_myTarget_my_app_name.jsonl"
+		core := strings.TrimSuffix(strings.TrimPrefix(base, "logs_"), ".jsonl")
+		// Now core == "myJob_myTarget_my_app_name"
+		parts := strings.SplitN(core, "_", 3)
+		// Expect exactly three parts: [job, target, appRest]
+		if len(parts) < 3 {
+			continue
+		}
+		target := parts[1]
+		seen[target] = struct{}{}
+	}
+
+	var result []json.RawMessage
+	for t := range seen {
+		b, err := json.Marshal(t)
+		if err != nil {
+			continue
+		}
+		result = append(result, json.RawMessage(b))
+	}
+	return result, nil
+}
+
+// queryJobByTarget returns all unique <job> values (as JSON) for files matching
+// “logs_<job>_<target>_<app>.jsonl” in d.dir. It takes a target string to filter.
+// Even if <app> contains underscores, SplitN(..., "_", 3) ensures correct job/target/appRest.
+func (d *DiskStorage) queryJobByTarget(target string) ([]json.RawMessage, error) {
+	// Pattern: logs_*_<target>_*.jsonl
+	pattern := filepath.Join(d.dir, "logs_*_"+target+"_*.jsonl")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, err
+	}
+
+	seen := make(map[string]struct{})
+	for _, fn := range matches {
+		base := filepath.Base(fn) // e.g. "logs_myJob_myTarget_my_app_name.jsonl"
+		core := strings.TrimSuffix(strings.TrimPrefix(base, "logs_"), ".jsonl")
+		// Now core == "myJob_myTarget_my_app_name"
+		parts := strings.SplitN(core, "_", 3)
+		// Expect exactly three parts: [job, target, appRest]
+		if len(parts) < 3 {
+			continue
+		}
+		// parts[1] is guaranteed to equal the passed-in target (due to the glob),
+		// so we only need to extract parts[0] as the job name.
+		job := parts[0]
+		seen[job] = struct{}{}
+	}
+
+	var result []json.RawMessage
+	for j := range seen {
+		b, err := json.Marshal(j)
+		if err != nil {
+			continue
+		}
+		result = append(result, json.RawMessage(b))
+	}
+	return result, nil
 }
 
 // --- discovery.Store implementation ---
@@ -201,6 +280,14 @@ func (d *DiskStorage) QueryApps(q QueryParams) ([]json.RawMessage, error) {
 }
 func (d *DiskStorage) QueryProcesses(q ProcessQuery) ([]json.RawMessage, error) {
 	return d.queryJSONLines("processes", q.Job, q.Target, q.Start, q.End)
+}
+
+func (d *DiskStorage) ListAllTargets() ([]json.RawMessage, error) {
+	return d.queryTarget()
+}
+
+func (d *DiskStorage) ListJobsByTarget(q JobQuery) ([]json.RawMessage, error) {
+	return d.queryJobByTarget(q.Target)
 }
 
 // QueryLogs returns all log lines in [q.Start, q.End].
