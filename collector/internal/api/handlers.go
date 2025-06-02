@@ -85,10 +85,11 @@ func logsHandler(store storage.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		job := r.URL.Query().Get("job")
 		target := r.URL.Query().Get("target")
+		app := r.URL.Query().Get("app")
 		start, _ := time.Parse(time.RFC3339, r.URL.Query().Get("start"))
 		end, _ := time.Parse(time.RFC3339, r.URL.Query().Get("end"))
 
-		lines, err := store.QueryLogs(storage.LogQuery{Job: job, Target: target, Start: start, End: end})
+		lines, err := store.QueryLogs(storage.LogQuery{Job: job, Target: target, App: app, Start: start, End: end})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
