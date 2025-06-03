@@ -175,7 +175,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "/logs?target=${Target}&job=${Job}&app=${App}&start=${__from:rfc3339}&end=${__to:rfc3339}",
+          "url": "/logs?target=${Target}&job=${Job}&app=${App}&lines=${logLines}",
           "url_options": {
             "data": "",
             "method": "GET"
@@ -566,8 +566,8 @@
       },
       {
         "current": {
-          "text": "round-table",
-          "value": "round-table"
+          "text": "vola-docs",
+          "value": "vola-docs"
         },
         "datasource": {
           "type": "yesoreyeram-infinity-datasource",
@@ -599,6 +599,49 @@
         "refresh": 1,
         "regex": "",
         "type": "query"
+      },
+      {
+        "current": {
+          "text": "10",
+          "value": "10"
+        },
+        "description": "Lines of logs to be displayed",
+        "label": "Log Lines",
+        "name": "logLines",
+        "options": [
+          {
+            "selected": true,
+            "text": "10",
+            "value": "10"
+          },
+          {
+            "selected": false,
+            "text": "50",
+            "value": "50"
+          },
+          {
+            "selected": false,
+            "text": "100",
+            "value": "100"
+          },
+          {
+            "selected": false,
+            "text": "200",
+            "value": "200"
+          },
+          {
+            "selected": false,
+            "text": "500",
+            "value": "500"
+          },
+          {
+            "selected": false,
+            "text": "1000",
+            "value": "1000"
+          }
+        ],
+        "query": "10, 50, 100, 200, 500, 1000",
+        "type": "custom"
       }
     ]
   },
@@ -610,5 +653,5 @@
   "timezone": "browser",
   "title": "Pm2 logs",
   "uid": "aa8b02a7-e748-468a-bc85-7bcddb3aa30d",
-  "version": 23
+  "version": 25
 }
