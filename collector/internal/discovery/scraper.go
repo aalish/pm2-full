@@ -25,7 +25,7 @@ type Store interface {
 //  1. One continuous tail‐goroutine per target (reconnecting on error).
 //  2. A ticker loop that scrapes metrics and processes every job.Interval.
 func Start(job config.Job, store Store) {
-	log.Printf("Starting job %q with interval %s", job.JobName, job.Interval)
+	// log.Printf("Starting job %q with interval %s", job.JobName, job.Interval)
 
 	// 1) Launch exactly one tail‐goroutine per target:
 	for _, t := range job.Targets {
@@ -34,7 +34,7 @@ func Start(job config.Job, store Store) {
 			url := base + job.Paths.Logs
 
 			for {
-				log.Printf("Attempting to tail logs from %s", url)
+				// log.Printf("Attempting to tail logs from %s", url)
 				if err := tail(url, target, store, job.JobName); err != nil {
 					log.Printf("tail error for %s: %v", target.Host, err)
 					time.Sleep(5 * time.Second)
@@ -53,7 +53,7 @@ func Start(job config.Job, store Store) {
 	scrapeMetricsAndProcesses(job, store)
 
 	for range ticker.C {
-		log.Printf("Running scrape for job %q", job.JobName)
+		// log.Printf("Running scrape for job %q", job.JobName)
 		scrapeMetricsAndProcesses(job, store)
 	}
 }
@@ -125,7 +125,7 @@ func tail(url string, t config.Target, store Store, jobName string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("bad status: %s", resp.Status)
 	}
-	log.Printf("Connected to %s, scanning logs...", url)
+	// log.Printf("Connected to %s, scanning logs...", url)
 
 	reader := bufio.NewReader(resp.Body)
 	for {
