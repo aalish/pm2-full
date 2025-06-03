@@ -65,7 +65,7 @@ func scrapeMetricsAndProcesses(job config.Job, store Store) {
 
 		// 1) metrics
 		if mf, err := fetchMetrics(base+job.Paths.Metrics, t.BasicAuth); err == nil {
-			log.Printf("Fetched metrics from %s", base+job.Paths.Metrics)
+			// log.Printf("Fetched metrics from %s", base+job.Paths.Metrics)
 			store.StoreMetrics(job.JobName, t.Host, mf)
 		} else {
 			log.Printf("metrics fetch error for %s: %v", t.Host, err)
@@ -73,7 +73,7 @@ func scrapeMetricsAndProcesses(job config.Job, store Store) {
 
 		// 2) processes JSON
 		if data, err := fetchJSON(base + job.Paths.Processes); err == nil {
-			log.Printf("Fetched processes JSON from %s", base+job.Paths.Processes)
+			// log.Printf("Fetched processes JSON from %s", base+job.Paths.Processes)
 			store.StoreProcesses(job.JobName, t.Host, data)
 		} else {
 			log.Printf("process fetch error for %s: %v", t.Host, err)
