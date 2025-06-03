@@ -14,56 +14,29 @@ import (
 	"github.com/prometheus/common/expfmt"
 )
 
-// Store is the interface your discovery layer uses to hand off data
+// Store is the interface your discovery layer uses to hand off data.
 type Store interface {
 	StoreMetrics(job, target string, mfs map[string]*dto.MetricFamily)
 	StoreProcesses(job, target string, data []byte)
 	StoreLog(job, target, line string)
 }
 
-// Start kicks off a perpetual scrape loop for one Job
+// Start kicks off:
+//  1. One continuous tail‐goroutine per target (reconnecting on error).
+//  2. A ticker loop that scrapes metrics and processes every job.Interval.
 func Start(job config.Job, store Store) {
 	log.Printf("Starting job %q with interval %s", job.JobName, job.Interval)
-	ticker := time.NewTicker(job.Interval)
-	defer ticker.Stop()
 
-	// initial scrape before waiting
-	scrape(job, store)
-
-	for range ticker.C {
-		log.Printf("Running scrape for job %q", job.JobName)
-		scrape(job, store)
-	}
-}
-
-// scrape fetches metrics, processes, and tail logs in background
-func scrape(job config.Job, store Store) {
+	// 1) Launch exactly one tail‐goroutine per target:
 	for _, t := range job.Targets {
-		base := fmt.Sprintf("http://%s:%d", t.Host, t.Port)
-
-		// metrics
-		if mf, err := fetchMetrics(base+job.Paths.Metrics, t.BasicAuth); err == nil {
-			log.Printf("Fetched metrics from %s", base+job.Paths.Metrics)
-			store.StoreMetrics(job.JobName, t.Host, mf)
-		} else {
-			log.Printf("metrics fetch error: %v", err)
-		}
-
-		// processes JSON
-		if data, err := fetchJSON(base + job.Paths.Processes); err == nil {
-			log.Printf("Fetched processes JSON from %s", base+job.Paths.Processes)
-			store.StoreProcesses(job.JobName, t.Host, data)
-		} else {
-			log.Printf("process fetch error: %v", err)
-		}
-
-		// logs tailing in background (reconnect on error)
 		go func(target config.Target) {
+			base := fmt.Sprintf("http://%s:%d", target.Host, target.Port)
 			url := base + job.Paths.Logs
+
 			for {
 				log.Printf("Attempting to tail logs from %s", url)
 				if err := tail(url, target, store, job.JobName); err != nil {
-					log.Printf("tail error: %v", err)
+					log.Printf("tail error for %s: %v", target.Host, err)
 					time.Sleep(5 * time.Second)
 					continue
 				}
@@ -71,9 +44,44 @@ func scrape(job config.Job, store Store) {
 			}
 		}(t)
 	}
+
+	// 2) Start a ticker that only scrapes metrics & processes on each tick:
+	ticker := time.NewTicker(job.Interval)
+	defer ticker.Stop()
+
+	// initial scrape
+	scrapeMetricsAndProcesses(job, store)
+
+	for range ticker.C {
+		log.Printf("Running scrape for job %q", job.JobName)
+		scrapeMetricsAndProcesses(job, store)
+	}
 }
 
-// fetchMetrics scrapes Prometheus-style text format and parses it
+// scrapeMetricsAndProcesses fetches /metrics and /processes for each target once.
+func scrapeMetricsAndProcesses(job config.Job, store Store) {
+	for _, t := range job.Targets {
+		base := fmt.Sprintf("http://%s:%d", t.Host, t.Port)
+
+		// 1) metrics
+		if mf, err := fetchMetrics(base+job.Paths.Metrics, t.BasicAuth); err == nil {
+			log.Printf("Fetched metrics from %s", base+job.Paths.Metrics)
+			store.StoreMetrics(job.JobName, t.Host, mf)
+		} else {
+			log.Printf("metrics fetch error for %s: %v", t.Host, err)
+		}
+
+		// 2) processes JSON
+		if data, err := fetchJSON(base + job.Paths.Processes); err == nil {
+			log.Printf("Fetched processes JSON from %s", base+job.Paths.Processes)
+			store.StoreProcesses(job.JobName, t.Host, data)
+		} else {
+			log.Printf("process fetch error for %s: %v", t.Host, err)
+		}
+	}
+}
+
+// fetchMetrics scrapes Prometheus-style text format and parses it.
 func fetchMetrics(url string, auth config.AuthCreds) (map[string]*dto.MetricFamily, error) {
 	req, _ := http.NewRequest("GET", url, nil)
 	if auth.Username != "" {
@@ -89,7 +97,7 @@ func fetchMetrics(url string, auth config.AuthCreds) (map[string]*dto.MetricFami
 	return parser.TextToMetricFamilies(resp.Body)
 }
 
-// fetchJSON fetches a JSON endpoint into a raw byte slice
+// fetchJSON fetches a JSON endpoint into a raw byte slice.
 func fetchJSON(url string) ([]byte, error) {
 	resp, err := http.Get(url)
 	if err != nil {
@@ -100,7 +108,7 @@ func fetchJSON(url string) ([]byte, error) {
 }
 
 // tail connects to a Server-Sent Events (SSE) or text-stream log endpoint and
-// scans new lines, handing each one to StoreLog immediately
+// scans new lines, handing each one to StoreLog immediately.
 func tail(url string, t config.Target, store Store, jobName string) error {
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("Accept", "text/event-stream")
@@ -124,7 +132,6 @@ func tail(url string, t config.Target, store Store, jobName string) error {
 		line, err := reader.ReadString('\n')
 		if len(line) > 0 {
 			raw := strings.TrimRight(line, "\r\n")
-			log.Printf("RAW LINE: %q", raw)
 			store.StoreLog(jobName, t.Host, raw)
 		}
 		if err != nil {
