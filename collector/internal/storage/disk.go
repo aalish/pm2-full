@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,11 +22,12 @@ import (
 // QueryParams defines common parameters for all queries.
 // App is the optional application name for logs.
 type QueryParams struct {
-	Job    string
-	Target string
-	App    string    // for logs: if empty, will fetch all apps
-	Start  time.Time // inclusive
-	End    time.Time // inclusive
+	Job      string
+	Target   string
+	App      string    // for logs: if empty, will fetch all apps
+	Start    time.Time // inclusive
+	End      time.Time // inclusive
+	NumLines int
 }
 type logRecord struct {
 	Timestamp string `json:"timestamp"`
@@ -295,14 +297,10 @@ func (d *DiskStorage) ListJobsByTarget(q JobQuery) ([]json.RawMessage, error) {
 	return d.queryJobByTarget(q.Target)
 }
 
-// QueryLogs returns all log lines in [q.Start, q.End].
-// If q.App != "", it will only open logs_<Job>_<Target>_<App>.jsonl (no wildcard).
-
-// QueryLogs now returns a slice of logRecord instead of []string
 func (d *DiskStorage) QueryLogs(q LogQuery) ([]logRecord, error) {
 	var records []logRecord
 
-	// Determine file pattern
+	// Determine file‐matching pattern
 	var pattern string
 	if q.App == "" {
 		pattern = fmt.Sprintf("logs_%s_%s_*.jsonl", q.Job, q.Target)
@@ -310,125 +308,82 @@ func (d *DiskStorage) QueryLogs(q LogQuery) ([]logRecord, error) {
 		pattern = fmt.Sprintf("logs_%s_%s_%s.jsonl", q.Job, q.Target, q.App)
 	}
 
-	// Find matching files
-	var files []string
-	if q.App == "" {
-		matches, err := filepath.Glob(filepath.Join(d.dir, pattern))
-		if err != nil {
-			return nil, err
-		}
-		files = matches
-	} else {
-		fullPath := filepath.Join(d.dir, pattern)
-		if _, err := os.Stat(fullPath); err != nil {
-			if os.IsNotExist(err) {
-				return []logRecord{}, nil
-			}
-			return nil, err
-		}
-		files = []string{fullPath}
+	// 1) Glob for matching files
+	matches, err := filepath.Glob(filepath.Join(d.dir, pattern))
+	if err != nil {
+		return nil, err
+	}
+	if len(matches) == 0 {
+		return []logRecord{}, nil
 	}
 
-	// Iterate over each file
-	for _, fn := range files {
+	// 2) Sort file names lexicographically so "oldest" come first
+	sort.Strings(matches)
+
+	// If NumLines <= 0, return empty slice (or you can choose to return all lines)
+	N := q.NumLines
+	if N <= 0 {
+		return []logRecord{}, nil
+	}
+
+	// 3) Create a circular buffer to hold the last N raw JSON lines
+	buffer := make([][]byte, N)
+	startIdx := 0
+	count := 0
+
+	// 4) Iterate each file in order, streaming line by line
+	for _, fn := range matches {
 		f, err := os.Open(fn)
 		if err != nil {
+			// skip if file doesn’t exist; but abort on other errors
 			if os.IsNotExist(err) {
 				continue
 			}
 			return nil, err
 		}
 
-		// Determine file size for binary search
-		stat, err := f.Stat()
-		if err != nil {
-			f.Close()
-			return nil, err
-		}
-		size := stat.Size()
-
-		// Binary search for starting offset ≥ q.Start
-		startOff := int64(0)
-		if !q.Start.IsZero() {
-			low, high := int64(0), size
-			for low < high {
-				mid := (low + high) / 2
-				if _, err := f.Seek(mid, io.SeekStart); err != nil {
-					break
-				}
-				buf := bufio.NewReader(f)
-				// Discard partial line
-				_, _ = buf.ReadString('\n')
-				lineBytes, err := buf.ReadBytes('\n')
-				if err != nil {
-					high = mid
-					continue
-				}
-				var hdr struct {
-					Timestamp string `json:"timestamp"`
-				}
-				if err := json.Unmarshal(lineBytes, &hdr); err != nil {
-					high = mid
-					continue
-				}
-				ts, err := time.Parse(time.RFC3339Nano, hdr.Timestamp)
-				if err != nil {
-					high = mid
-					continue
-				}
-				if ts.Before(q.Start) {
-					low = mid + 1
-				} else {
-					high = mid
-				}
-			}
-			startOff = low
-		}
-
-		// Seek to computed offset and scan forward
-		if _, err := f.Seek(startOff, io.SeekStart); err != nil {
-			f.Close()
-			return nil, err
-		}
 		scanner := bufio.NewScanner(f)
 		for scanner.Scan() {
-			raw := scanner.Bytes()
-			var hdr struct {
-				Timestamp string `json:"timestamp"`
-			}
-			if err := json.Unmarshal(raw, &hdr); err != nil {
-				continue
-			}
-			ts, err := time.Parse(time.RFC3339Nano, hdr.Timestamp)
-			if err != nil {
-				continue
-			}
-			if (!q.Start.IsZero() && ts.Before(q.Start)) ||
-				(!q.End.IsZero() && ts.After(q.End)) {
-				if !q.End.IsZero() && ts.After(q.End) {
-					break
-				}
-				continue
-			}
+			raw := append([]byte(nil), scanner.Bytes()...) // copy bytes
 
-			// Extract the “line” and “app” fields
-			var recJSON struct {
-				Timestamp string `json:"timestamp"`
-				App       string `json:"app"`
-				Line      string `json:"line"`
+			if count < N {
+				buffer[count] = raw
+				count++
+			} else {
+				// overwrite the oldest slot
+				buffer[startIdx] = raw
+				startIdx = (startIdx + 1) % N
 			}
-			if err := json.Unmarshal(raw, &recJSON); err != nil {
-				continue
-			}
-
-			// Append a structured logRecord
-			records = append(records, logRecord{
-				Timestamp: recJSON.Timestamp,
-				App:       recJSON.App,
-				Line:      recJSON.Line,
-			})
 		}
 		f.Close()
+		if err := scanner.Err(); err != nil {
+			return nil, err
+		}
+	}
+
+	// 5) Now “count” holds how many total lines we saw (capped at N), and
+	//    startIdx points at where the oldest buffered line sits.
+	//    We need to read them in chronological order:
+	for i := 0; i < count; i++ {
+		idx := (startIdx + i) % N
+		raw := buffer[idx]
+
+		// Parse the JSONL line into an intermediate struct
+		var recJSON struct {
+			Timestamp string `json:"timestamp"`
+			App       string `json:"app"`
+			Line      string `json:"line"`
+		}
+		if err := json.Unmarshal(raw, &recJSON); err != nil {
+			// skip any invalid JSON
+			continue
+		}
+
+		records = append(records, logRecord{
+			Timestamp: recJSON.Timestamp,
+			App:       recJSON.App,
+			Line:      recJSON.Line,
+		})
 	}
 
 	return records, nil

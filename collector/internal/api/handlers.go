@@ -4,6 +4,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/aalish/pm2-full/internal/storage"
@@ -117,11 +118,12 @@ func logsHandler(store storage.Store) http.HandlerFunc {
 		job := r.URL.Query().Get("job")
 		target := r.URL.Query().Get("target")
 		app := r.URL.Query().Get("app")
+		numLines, err1 := strconv.Atoi(r.URL.Query().Get("lines"))
 		start, _ := time.Parse(time.RFC3339, r.URL.Query().Get("start"))
 		end, _ := time.Parse(time.RFC3339, r.URL.Query().Get("end"))
 
-		lines, err := store.QueryLogs(storage.LogQuery{Job: job, Target: target, App: app, Start: start, End: end})
-		if err != nil {
+		lines, err := store.QueryLogs(storage.LogQuery{Job: job, Target: target, App: app, Start: start, End: end, NumLines: numLines})
+		if err != nil || err1 != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
