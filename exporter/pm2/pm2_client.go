@@ -74,9 +74,7 @@ func NewClient(socketPath string, interval time.Duration) *Client {
 	return &Client{socketPath: socketPath, interval: interval}
 }
 
-// List retrieves the current PM2 process list, capturing stderr for better diagnostics
 func (c *Client) List() ([]ProcessInfo, error) {
-	// Capture stderr alongside stdout
 	cmd := exec.Command("pm2", "jlist")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -86,9 +84,16 @@ func (c *Client) List() ([]ProcessInfo, error) {
 		return nil, fmt.Errorf("pm2 jlist failed: %v; stderr=%s", err, stderr.String())
 	}
 
+	// Strip logs before valid JSON
+	jsonStart := bytes.Index(out, []byte("[{"))
+	if jsonStart == -1 {
+		return nil, fmt.Errorf("could not find start of JSON in PM2 output (length %d)", len(out))
+	}
+	cleanOut := out[jsonStart:]
+
 	var procs []ProcessInfo
-	if err := json.Unmarshal(out, &procs); err != nil {
-		return nil, fmt.Errorf("failed to parse PM2 JSON (%d bytes): %v", len(out), err)
+	if err := json.Unmarshal(cleanOut, &procs); err != nil {
+		return nil, fmt.Errorf("failed to parse PM2 JSON (%d bytes): %v", len(cleanOut), err)
 	}
 	return procs, nil
 }
